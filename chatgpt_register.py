@@ -26,9 +26,13 @@ from curl_cffi import requests as curl_requests
 def _load_config():
     """从 config.json 加载配置，环境变量优先级更高"""
     config = {
+        "mail_provider": "duckmail",
         "total_accounts": 3,
         "duckmail_api_base": "https://api.duckmail.sbs",
         "duckmail_bearer": "",
+        "cf_worker_domain": "",
+        "cf_email_domain": "",
+        "cf_admin_password": "",
         "proxy": "",
         "output_file": "registered_accounts.txt",
         "enable_oauth": True,
@@ -53,8 +57,12 @@ def _load_config():
             print(f"⚠️ 加载 config.json 失败: {e}")
 
     # 环境变量优先级更高
+    config["mail_provider"] = os.environ.get("MAIL_PROVIDER", config["mail_provider"])
     config["duckmail_api_base"] = os.environ.get("DUCKMAIL_API_BASE", config["duckmail_api_base"])
     config["duckmail_bearer"] = os.environ.get("DUCKMAIL_BEARER", config["duckmail_bearer"])
+    config["cf_worker_domain"] = os.environ.get("CF_WORKER_DOMAIN", config["cf_worker_domain"])
+    config["cf_email_domain"] = os.environ.get("CF_EMAIL_DOMAIN", config["cf_email_domain"])
+    config["cf_admin_password"] = os.environ.get("CF_ADMIN_PASSWORD", config["cf_admin_password"])
     config["proxy"] = os.environ.get("PROXY", config["proxy"])
     config["total_accounts"] = int(os.environ.get("TOTAL_ACCOUNTS", config["total_accounts"]))
     config["enable_oauth"] = os.environ.get("ENABLE_OAUTH", config["enable_oauth"])
@@ -80,8 +88,12 @@ def _as_bool(value):
 
 
 _CONFIG = _load_config()
+MAIL_PROVIDER = _CONFIG["mail_provider"].strip().lower()  # "duckmail" or "cfworker"
 DUCKMAIL_API_BASE = _CONFIG["duckmail_api_base"]
 DUCKMAIL_BEARER = _CONFIG["duckmail_bearer"]
+CF_WORKER_DOMAIN = _CONFIG["cf_worker_domain"]
+CF_EMAIL_DOMAIN = _CONFIG["cf_email_domain"]
+CF_ADMIN_PASSWORD = _CONFIG["cf_admin_password"]
 DEFAULT_TOTAL_ACCOUNTS = _CONFIG["total_accounts"]
 DEFAULT_PROXY = _CONFIG["proxy"]
 DEFAULT_OUTPUT_FILE = _CONFIG["output_file"]
@@ -96,10 +108,13 @@ TOKEN_JSON_DIR = _CONFIG["token_json_dir"]
 UPLOAD_API_URL = _CONFIG["upload_api_url"]
 UPLOAD_API_TOKEN = _CONFIG["upload_api_token"]
 
-if not DUCKMAIL_BEARER:
-    print("⚠️ 警告: 未设置 DUCKMAIL_BEARER，请在 config.json 中设置或设置环境变量")
+if MAIL_PROVIDER == "duckmail" and not DUCKMAIL_BEARER:
+    print("⚠️ 警告: mail_provider=duckmail 但未设置 DUCKMAIL_BEARER")
     print("   文件: config.json -> duckmail_bearer")
     print("   环境变量: export DUCKMAIL_BEARER='your_api_key_here'")
+elif MAIL_PROVIDER == "cfworker" and not CF_WORKER_DOMAIN:
+    print("⚠️ 警告: mail_provider=cfworker 但未设置 cf_worker_domain")
+    print("   请在 config.json 中设置 cf_worker_domain, cf_email_domain, cf_admin_password")
 
 # 全局线程锁
 _print_lock = threading.Lock()
@@ -719,10 +734,10 @@ class ChatGPTRegister:
         with _print_lock:
             print(f"{prefix}{msg}")
 
-    # ==================== DuckMail 临时邮箱 ====================
+    # ==================== 邮箱服务 (DuckMail / CF Worker) ====================
 
-    def _create_duckmail_session(self):
-        """创建带重试的 DuckMail 请求会话"""
+    def _create_mail_session(self):
+        """创建邮箱 API 请求会话"""
         session = curl_requests.Session()
         session.headers.update({
             "User-Agent": self.ua,
@@ -733,12 +748,27 @@ class ChatGPTRegister:
             session.proxies = {"http": self.proxy, "https": self.proxy}
         return session
 
+    # ---- 统一入口 ----
+
     def create_temp_email(self):
-        """创建 DuckMail 临时邮箱，返回 (email, password, mail_token)"""
+        """创建临时邮箱，返回 (email, password, mail_token)"""
+        if MAIL_PROVIDER == "cfworker":
+            return self._create_temp_email_cfworker()
+        return self._create_temp_email_duckmail()
+
+    def _fetch_emails(self, mail_token: str):
+        """获取邮件列表（统一入口）"""
+        if MAIL_PROVIDER == "cfworker":
+            return self._fetch_emails_cfworker(mail_token)
+        return self._fetch_emails_duckmail(mail_token)
+
+    # ---- DuckMail 实现 ----
+
+    def _create_temp_email_duckmail(self):
+        """创建 DuckMail 临时邮箱"""
         if not DUCKMAIL_BEARER:
             raise Exception("DUCKMAIL_BEARER 未设置，无法创建临时邮箱")
 
-        # 生成随机邮箱前缀 8-13 位
         chars = string.ascii_lowercase + string.digits
         length = random.randint(8, 13)
         email_local = "".join(random.choice(chars) for _ in range(length))
@@ -747,40 +777,23 @@ class ChatGPTRegister:
 
         api_base = DUCKMAIL_API_BASE.rstrip("/")
         headers = {"Authorization": f"Bearer {DUCKMAIL_BEARER}"}
-        session = self._create_duckmail_session()
+        session = self._create_mail_session()
 
         try:
-            # 1. 创建账号
             payload = {"address": email, "password": password}
-            res = session.post(
-                f"{api_base}/accounts",
-                json=payload,
-                headers=headers,
-                timeout=15,
-                impersonate=self.impersonate
-            )
-
+            res = session.post(f"{api_base}/accounts", json=payload, headers=headers,
+                               timeout=15, impersonate=self.impersonate)
             if res.status_code not in [200, 201]:
                 raise Exception(f"创建邮箱失败: {res.status_code} - {res.text[:200]}")
 
-            # 2. 获取 Token（用于读取邮件）
             time.sleep(0.5)
-            token_payload = {"address": email, "password": password}
-            token_res = session.post(
-                f"{api_base}/token",
-                json=token_payload,
-                timeout=15,
-                impersonate=self.impersonate
-            )
-
+            token_res = session.post(f"{api_base}/token", json={"address": email, "password": password},
+                                     timeout=15, impersonate=self.impersonate)
             if token_res.status_code == 200:
-                token_data = token_res.json()
-                mail_token = token_data.get("token")
+                mail_token = token_res.json().get("token")
                 if mail_token:
                     return email, password, mail_token
-
             raise Exception(f"获取邮件 Token 失败: {token_res.status_code}")
-
         except Exception as e:
             raise Exception(f"DuckMail 创建邮箱失败: {e}")
 
@@ -789,15 +802,9 @@ class ChatGPTRegister:
         try:
             api_base = DUCKMAIL_API_BASE.rstrip("/")
             headers = {"Authorization": f"Bearer {mail_token}"}
-            session = self._create_duckmail_session()
-
-            res = session.get(
-                f"{api_base}/messages",
-                headers=headers,
-                timeout=15,
-                impersonate=self.impersonate
-            )
-
+            session = self._create_mail_session()
+            res = session.get(f"{api_base}/messages", headers=headers,
+                              timeout=15, impersonate=self.impersonate)
             if res.status_code == 200:
                 data = res.json()
                 messages = data.get("hydra:member") or data.get("member") or data.get("data") or []
@@ -811,23 +818,68 @@ class ChatGPTRegister:
         try:
             api_base = DUCKMAIL_API_BASE.rstrip("/")
             headers = {"Authorization": f"Bearer {mail_token}"}
-            session = self._create_duckmail_session()
-
+            session = self._create_mail_session()
             if isinstance(msg_id, str) and msg_id.startswith("/messages/"):
                 msg_id = msg_id.split("/")[-1]
-
-            res = session.get(
-                f"{api_base}/messages/{msg_id}",
-                headers=headers,
-                timeout=15,
-                impersonate=self.impersonate
-            )
-
+            res = session.get(f"{api_base}/messages/{msg_id}", headers=headers,
+                              timeout=15, impersonate=self.impersonate)
             if res.status_code == 200:
                 return res.json()
         except Exception:
             pass
         return None
+
+    # ---- CF Worker 实现 ----
+
+    def _create_temp_email_cfworker(self):
+        """通过 CF Worker 创建临时邮箱"""
+        if not CF_WORKER_DOMAIN:
+            raise Exception("cf_worker_domain 未设置")
+
+        name_len = random.randint(10, 14)
+        name_chars = list(random.choices(string.ascii_lowercase, k=name_len))
+        for _ in range(random.choice([1, 2])):
+            pos = random.randint(2, len(name_chars) - 1)
+            name_chars.insert(pos, random.choice(string.digits))
+        name = "".join(name_chars)
+        password = _generate_password()
+
+        session = self._create_mail_session()
+        try:
+            res = session.post(
+                f"https://{CF_WORKER_DOMAIN}/admin/new_address",
+                json={"enablePrefix": True, "name": name, "domain": CF_EMAIL_DOMAIN},
+                headers={"x-admin-auth": CF_ADMIN_PASSWORD, "Content-Type": "application/json"},
+                timeout=15, impersonate=self.impersonate,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                email = data.get("address")
+                jwt_token = data.get("jwt")
+                if email and jwt_token:
+                    self._print(f"[CFWorker] 邮箱: {email}")
+                    return email, password, jwt_token
+            raise Exception(f"创建失败: {res.status_code} - {res.text[:200]}")
+        except Exception as e:
+            raise Exception(f"CF Worker 创建邮箱失败: {e}")
+
+    def _fetch_emails_cfworker(self, mail_token: str):
+        """从 CF Worker 获取邮件列表"""
+        try:
+            session = self._create_mail_session()
+            res = session.get(
+                f"https://{CF_WORKER_DOMAIN}/api/mails",
+                params={"limit": 10, "offset": 0},
+                headers={"Authorization": f"Bearer {mail_token}"},
+                timeout=30, impersonate=self.impersonate,
+            )
+            if res.status_code == 200:
+                return res.json().get("results", [])
+        except Exception:
+            pass
+        return []
+
+    # ---- 通用工具 ----
 
     def _extract_verification_code(self, email_content: str):
         """从邮件内容提取 6 位验证码"""
@@ -846,30 +898,42 @@ class ChatGPTRegister:
         for pattern in patterns:
             matches = re.findall(pattern, email_content, re.IGNORECASE)
             for code in matches:
-                if code == "177010":  # 已知误判
+                if code == "177010":
                     continue
                 return code
         return None
 
+    def _extract_code_from_mail_item(self, mail_token, msg_item):
+        """从单个邮件项中提取验证码（兼容 DuckMail 和 CF Worker）"""
+        if MAIL_PROVIDER == "cfworker":
+            # CF Worker 邮件直接包含 raw 字段
+            raw = msg_item.get("raw", "")
+            return self._extract_verification_code(raw)
+        else:
+            # DuckMail 需要再请求详情
+            msg_id = msg_item.get("id") or msg_item.get("@id")
+            if not msg_id:
+                return None
+            detail = self._fetch_email_detail_duckmail(mail_token, msg_id)
+            if detail:
+                content = detail.get("text") or detail.get("html") or ""
+                return self._extract_verification_code(content)
+            return None
+
     def wait_for_verification_email(self, mail_token: str, timeout: int = 120):
         """等待并提取 OpenAI 验证码"""
-        self._print(f"[OTP] 等待验证码邮件 (最多 {timeout}s)...")
+        provider_name = "CFWorker" if MAIL_PROVIDER == "cfworker" else "DuckMail"
+        self._print(f"[OTP] 等待验证码邮件 ({provider_name}, 最多 {timeout}s)...")
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            messages = self._fetch_emails_duckmail(mail_token)
-            if messages and len(messages) > 0:
-                first_msg = messages[0]
-                msg_id = first_msg.get("id") or first_msg.get("@id")
-
-                if msg_id:
-                    detail = self._fetch_email_detail_duckmail(mail_token, msg_id)
-                    if detail:
-                        content = detail.get("text") or detail.get("html") or ""
-                        code = self._extract_verification_code(content)
-                        if code:
-                            self._print(f"[OTP] 验证码: {code}")
-                            return code
+            messages = self._fetch_emails(mail_token)
+            if messages:
+                for msg_item in messages[:5]:
+                    code = self._extract_code_from_mail_item(mail_token, msg_item)
+                    if code:
+                        self._print(f"[OTP] 验证码: {code}")
+                        return code
 
             elapsed = int(time.time() - start_time)
             self._print(f"[OTP] 等待中... ({elapsed}s/{timeout}s)")
@@ -1754,19 +1818,27 @@ def _register_one(idx, total, proxy, output_file):
 
 def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
               max_workers=3, proxy=None):
-    """并发批量注册 - DuckMail 临时邮箱版"""
+    """并发批量注册"""
 
-    if not DUCKMAIL_BEARER:
-        print("❌ 错误: 未设置 DUCKMAIL_BEARER 环境变量")
+    # 按 provider 检查配置
+    if MAIL_PROVIDER == "duckmail" and not DUCKMAIL_BEARER:
+        print("❌ 错误: mail_provider=duckmail 但未设置 DUCKMAIL_BEARER")
         print("   请设置: export DUCKMAIL_BEARER='your_api_key_here'")
-        print("   或: set DUCKMAIL_BEARER=your_api_key_here (Windows)")
+        return
+    elif MAIL_PROVIDER == "cfworker" and not CF_WORKER_DOMAIN:
+        print("❌ 错误: mail_provider=cfworker 但未设置 cf_worker_domain")
+        print("   请在 config.json 中设置 cf_worker_domain, cf_email_domain, cf_admin_password")
         return
 
+    provider_label = "CF Worker" if MAIL_PROVIDER == "cfworker" else "DuckMail"
     actual_workers = min(max_workers, total_accounts)
     print(f"\n{'#'*60}")
-    print(f"  ChatGPT 批量自动注册 (DuckMail 临时邮箱版)")
+    print(f"  ChatGPT 批量自动注册 ({provider_label} 邮箱)")
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
-    print(f"  DuckMail: {DUCKMAIL_API_BASE}")
+    if MAIL_PROVIDER == "cfworker":
+        print(f"  CF Worker: {CF_WORKER_DOMAIN} | 邮箱域: {CF_EMAIL_DOMAIN}")
+    else:
+        print(f"  DuckMail: {DUCKMAIL_API_BASE}")
     print(f"  OAuth: {'开启' if ENABLE_OAUTH else '关闭'} | required: {'是' if OAUTH_REQUIRED else '否'}")
     if ENABLE_OAUTH:
         print(f"  OAuth Issuer: {OAUTH_ISSUER}")
@@ -1813,16 +1885,21 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
 
 
 def main():
+    provider_label = "CF Worker" if MAIL_PROVIDER == "cfworker" else "DuckMail"
     print("=" * 60)
-    print("  ChatGPT 批量自动注册工具 (DuckMail 临时邮箱版)")
+    print(f"  ChatGPT 批量自动注册工具 ({provider_label} 邮箱)")
     print("=" * 60)
 
-    # 检查 DuckMail 配置
-    if not DUCKMAIL_BEARER:
+    # 按 provider 检查配置
+    if MAIL_PROVIDER == "duckmail" and not DUCKMAIL_BEARER:
         print("\n⚠️  警告: 未设置 DUCKMAIL_BEARER")
         print("   请编辑 config.json 设置 duckmail_bearer，或设置环境变量:")
-        print("   Windows: set DUCKMAIL_BEARER=your_api_key_here")
         print("   Linux/Mac: export DUCKMAIL_BEARER='your_api_key_here'")
+        print("\n   按 Enter 继续尝试运行 (可能会失败)...")
+        input()
+    elif MAIL_PROVIDER == "cfworker" and not CF_WORKER_DOMAIN:
+        print("\n⚠️  警告: 未设置 cf_worker_domain")
+        print("   请编辑 config.json 设置 cf_worker_domain, cf_email_domain, cf_admin_password")
         print("\n   按 Enter 继续尝试运行 (可能会失败)...")
         input()
 

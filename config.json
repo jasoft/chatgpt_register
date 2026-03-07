@@ -1,22 +1,28 @@
 {
-  "_comment": "ChatGPT(DuckMail)",
+    "_comment": "ChatGPT 批量注册 - 支持 DuckMail / CF Worker 邮箱",
 
-  "total_accounts": 5,
+    "mail_provider": "cfworker",
 
-  "duckmail_api_base": "https://api.duckmail.sbs",
-  "duckmail_bearer": "",
+    "total_accounts": 5,
 
-  "proxy": "",
+    "duckmail_api_base": "https://api.duckmail.sbs",
+    "duckmail_bearer": "",
 
-  "output_file": "registered_accounts.txt",
-  "enable_oauth": true,
-  "oauth_required": true,
-  "oauth_issuer": "https://auth.openai.com",
-  "oauth_client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
-  "oauth_redirect_uri": "http://localhost:1455/auth/callback",
-  "ak_file": "ak.txt",
-  "rk_file": "rk.txt",
-  "token_json_dir": "codex_tokens",
-  "upload_api_url": "http://localhost:8317/v0/management/auth-files",
-  "upload_api_token": "你的cpa面板登录密码"
+    "cf_worker_domain": "",
+    "cf_email_domain": "",
+    "cf_admin_password": "",
+
+    "proxy": "",
+
+    "output_file": "registered_accounts.txt",
+    "enable_oauth": true,
+    "oauth_required": true,
+    "oauth_issuer": "https://auth.openai.com",
+    "oauth_client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "oauth_redirect_uri": "http://localhost:1455/auth/callback",
+    "ak_file": "ak.txt",
+    "rk_file": "rk.txt",
+    "token_json_dir": "codex_tokens",
+    "upload_api_url": "http://localhost:8317/v0/management/auth-files",
+    "upload_api_token": "你的cpa面板登录密码"
 }
