@@ -1,0 +1,28 @@
+{
+    "_comment": "ChatGPT 批量注册 - 支持 DuckMail / CF Worker 邮箱",
+
+    "mail_provider": "cfworker",
+
+    "total_accounts": 5,
+
+    "duckmail_api_base": "https://api.duckmail.sbs",
+    "duckmail_bearer": "your_duckmail_api_token",
+
+    "cf_worker_domain": "your-worker.your-subdomain.workers.dev",
+    "cf_email_domain": "mail.example.com",
+    "cf_admin_password": "your_admin_password",
+
+    "proxy": "",
+
+    "output_file": "registered_accounts.txt",
+    "enable_oauth": true,
+    "oauth_required": true,
+    "oauth_issuer": "https://auth.openai.com",
+    "oauth_client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "oauth_redirect_uri": "http://localhost:1455/auth/callback",
+    "ak_file": "ak.txt",
+    "rk_file": "rk.txt",
+    "token_json_dir": "codex_tokens",
+    "upload_api_url": "http://localhost:8317/v0/management/auth-files",
+    "upload_api_token": "your_cpa_panel_password"
+}

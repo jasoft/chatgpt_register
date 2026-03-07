@@ -1764,7 +1764,10 @@ def _register_one(idx, total, proxy, output_file):
         reg = ChatGPTRegister(proxy=proxy, tag=f"{idx}")
 
         # 1. 创建 DuckMail 临时邮箱
-        reg._print("[DuckMail] 创建临时邮箱...")
+        if MAIL_PROVIDER == "duckmail":
+            reg._print("[DuckMail] 创建临时邮箱...")
+        elif MAIL_PROVIDER == "cfworker":
+            reg._print("[CFWorker] 创建临时邮箱...")
         email, email_pwd, mail_token = reg.create_temp_email()
         tag = email.split("@")[0]
         reg.tag = tag  # 更新 tag

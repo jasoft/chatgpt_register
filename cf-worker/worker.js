@@ -4,7 +4,7 @@
  * 绑定要求:
  *   KV Namespace: MAIL_KV
  *   环境变量:    ADMIN_PASSWORD (管理密码)
- *               JWT_SECRET     (JWT 签名密钥, 随机字符串即可) yuyuihuqwer8972137984308947
+ *               JWT_SECRET     (JWT 签名密钥, 随机字符串即可)
  *               EMAIL_DOMAIN   (你的邮箱域名, 如 mail.example.com)
  *
  * Cloudflare Email Routing:
