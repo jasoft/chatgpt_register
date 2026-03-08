@@ -8,9 +8,10 @@
     "duckmail_api_base": "https://api.duckmail.sbs",
     "duckmail_bearer": "",
 
-    "cf_worker_domain": "",
-    "cf_email_domain": "",
-    "cf_admin_password": "",
+    "cf_worker_domain": "tempmail.ja-invent.workers.dev",
+    "cf_email_domain": "ursoftware.com",
+    "cf_admin_password": "Enteritok12",
+    "cloudflare_api_token": "",
 
     "proxy": "",
 
